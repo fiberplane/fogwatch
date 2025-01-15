@@ -1,0 +1,52 @@
+# fogwatch configuration file
+# This is a sample configuration file for fogwatch. Copy this file to one of:
+#   - ./fogwatch.toml (project-specific)
+#   - ~/.config/fogwatch/config.toml (user-specific)
+
+# Cloudflare Workers Authentication
+# These values can also be set via environment variables:
+#   - CLOUDFLARE_API_TOKEN
+#   - CLOUDFLARE_ACCOUNT_ID
+[auth]
+api_token = ""        # Your Cloudflare API token
+account_id = ""       # Your Cloudflare account ID
+
+# UI Configuration
+[ui]
+theme = "dark"                     # UI theme (dark/light)
+default_detail_width = 50          # Width percentage of detail pane (1-100)
+max_log_entries = 1000             # Maximum number of log entries to keep in memory
+timestamp_format = "RFC3339"       # Log timestamp format (RFC3339/Unix/Custom)
+show_status_bar = true             # Show status bar at bottom
+enable_mouse = true                # Enable mouse support
+
+# Log Display Configuration
+[logs]
+syntax_highlight = true            # Enable syntax highlighting for JSON
+default_log_level = "info"         # Minimum log level to display (debug/info/warn/error)
+auto_scroll = true                 # Auto-scroll to new logs
+preserve_scroll = true             # Preserve scroll position when switching workers
+show_line_numbers = false          # Show line numbers in log view
+
+# Workers Configuration
+[workers]
+auto_reconnect = true              # Automatically reconnect on connection loss
+reconnect_interval = 5             # Seconds to wait before reconnecting
+batch_size = 100                   # Number of logs to fetch in each batch
+environments = ["production"]      # Worker environments to monitor
+
+# Advanced Settings
+[advanced]
+websocket_timeout = 30             # WebSocket connection timeout in seconds
+max_retry_attempts = 3             # Maximum connection retry attempts
+debug_mode = false                 # Enable debug logging
+log_persistence = false            # Save logs between sessions
+log_file = "~/.fogwatch/logs"     # Path to save persistent logs
+
+# Key Bindings Reference:
+# q          - Quit
+# ↑/↓        - Navigate through logs/workers
+# Enter      - Select worker / Toggle details
+# Tab        - Switch focus between panels
+# PageUp/Dn  - Scroll details view
+# Left/Right - Switch focus between logs and details 
