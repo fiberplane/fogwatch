@@ -10,6 +10,7 @@
 // Import required dependencies for terminal manipulation, async runtime, and WebSocket communication
 use std::io;
 use std::sync::mpsc;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,21 +21,21 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap, BorderType},
     text::{Line, Span, Text},
-    Terminal, Frame,
+    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    Frame, Terminal,
 };
+use serde_json;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{
+        handshake::client::{generate_key, Request},
         Message,
-        handshake::client::{Request, generate_key},
     },
 };
 use url::Url;
-use serde_json;
 
-use crate::{TailEventMessage, Outcome};
+use crate::{Outcome, TailEventMessage};
 
 /// Represents the different states of the application UI
 #[derive(Debug)]
@@ -157,7 +158,7 @@ impl App {
         if workers.is_empty() {
             return;
         }
-        
+
         let i = match self.list_state.selected() {
             Some(i) => {
                 if i >= workers.len().saturating_sub(1) {
@@ -198,8 +199,8 @@ impl App {
                 if selected < workers.len() {
                     self.selected_worker = Some(workers[selected].clone());
                     self.state = AppState::Connecting;
-                    self.active_filter = Some(StatusFilter::All);  // Set default filter to All
-                    self.apply_filter();  // Apply the filter
+                    self.active_filter = Some(StatusFilter::All); // Set default filter to All
+                    self.apply_filter(); // Apply the filter
                 }
             }
         }
@@ -210,7 +211,7 @@ impl App {
         if self.logs.is_empty() {
             return;
         }
-        
+
         let i = match self.log_state.selected() {
             Some(i) => {
                 if i >= self.logs.len().saturating_sub(1) {
@@ -222,7 +223,7 @@ impl App {
             None => 0,
         };
         self.log_state.select(Some(i));
-        self.detail_scroll = 0;  // Reset scroll position
+        self.detail_scroll = 0; // Reset scroll position
     }
 
     /// Moves to previous log entry
@@ -242,7 +243,7 @@ impl App {
             None => 0,
         };
         self.log_state.select(Some(i));
-        self.detail_scroll = 0;  // Reset scroll position
+        self.detail_scroll = 0; // Reset scroll position
     }
 
     /// Toggles detailed view for current log entry
@@ -303,7 +304,7 @@ impl App {
     /// Applies current status filter to log list
     pub fn apply_filter(&mut self) {
         self.filtered_logs.clear();
-        
+
         for (index, log) in self.logs.iter().enumerate() {
             let matches = match self.active_filter {
                 Some(StatusFilter::Success) => {
@@ -320,7 +321,7 @@ impl App {
                     } else {
                         false
                     }
-                },
+                }
                 Some(StatusFilter::ClientErr) => {
                     if let Some(event) = &log.event {
                         if let Some(response) = event.get("response") {
@@ -335,7 +336,7 @@ impl App {
                     } else {
                         false
                     }
-                },
+                }
                 Some(StatusFilter::ServerErr) => {
                     if let Some(event) = &log.event {
                         if let Some(response) = event.get("response") {
@@ -350,8 +351,9 @@ impl App {
                     } else {
                         false
                     }
-                },
+                }
                 Some(StatusFilter::Other) => {
+                    // with edition 2024 let chains are stabilized and then this can be simplified
                     if let Some(event) = &log.event {
                         if let Some(response) = event.get("response") {
                             if let Some(status) = response.get("status").and_then(|s| s.as_u64()) {
@@ -365,7 +367,7 @@ impl App {
                     } else {
                         true
                     }
-                },
+                }
                 Some(StatusFilter::All) | None => true,
             };
 
@@ -543,13 +545,7 @@ pub fn run_ui(
                         // Build WebSocket URL
                         let ws_url = tail_info.url.replace("http://", "wss://");
 
-                        if args_with_worker.debug {
-                            let log = crate::create_log_entry(
-                                format!("Attempting to connect to WebSocket URL: {}", ws_url),
-                                "debug"
-                            );
-                            let _ = tx_for_ws.send(crate::create_tail_event(log));
-                        }
+                        create_debug_log_entry(args_with_worker.debug, &tx_for_ws, format!("Attempting to connect to WebSocket URL: {ws_url}"), "debug");
 
                         // Connect to WebSocket
                         let url = Url::parse(&ws_url)?;
@@ -557,7 +553,7 @@ pub fn run_ui(
                         let request = Request::builder()
                             .uri(ws_url)
                             .header("Host", url.host_str().unwrap_or_default())
-                            .header("User-Agent", "fogwatch/0.1.0")
+                            .header("User-Agent", format!("fogwatch/{}", env!("CARGO_PKG_VERSION")))
                             .header("Sec-WebSocket-Protocol", "trace-v1")
                             .header("Sec-WebSocket-Key", ws_key)
                             .header("Sec-WebSocket-Version", "13")
@@ -565,31 +561,19 @@ pub fn run_ui(
                             .header("Upgrade", "websocket")
                             .body(())?;
 
-                        if args_with_worker.debug {
-                            let log = crate::create_log_entry(
-                                format!("Using trace-v1 protocol with host: {}", url.host_str().unwrap_or_default()),
-                                "debug"
-                            );
-                            let _ = tx_for_ws.send(crate::create_tail_event(log));
-                        }
+                        create_debug_log_entry(args_with_worker.debug, &tx_for_ws, format!("Using trace-v1 protocol with host: {}", url.host_str().unwrap_or_default()), "debug");
 
                         // After WebSocket connection is established
                         let (ws_stream, _) = connect_async(request).await?;
 
-                        if args_with_worker.debug {
-                            let log = crate::create_log_entry(
-                                "WebSocket connection established, waiting for logs...".to_string(),
-                                "debug"
-                            );
-                            let _ = tx_for_ws.send(crate::create_tail_event(log));
-                        }
+                        create_debug_log_entry(args_with_worker.debug, &tx_for_ws, "WebSocket connection established, waiting for logs...", "debug");
 
                         let (write, mut read) = ws_stream.split();
                         let write = std::sync::Arc::new(tokio::sync::Mutex::new(write));
                         let write_for_ping = write.clone();
 
                         // Start ping/pong task
-                        let ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+                        let ping_interval = tokio::time::interval(Duration::from_secs(10));
                         let tx_for_ping = tx_for_error.clone();
                         let args_for_ping = args_with_worker.clone();
                         let waiting_for_pong = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -599,24 +583,13 @@ pub fn run_ui(
                             loop {
                                 interval.tick().await;
                                 if waiting_for_pong.load(std::sync::atomic::Ordering::SeqCst) {
-                                    if args_for_ping.debug {
-                                        let log = crate::create_log_entry(
-                                            "No pong received, connection may be dead".to_string(),
-                                            "error"
-                                        );
-                                        let _ = tx_for_ping.send(crate::create_tail_event(log));
-                                    }
+                                    create_debug_log_entry(args_for_ping.debug, &tx_for_ping, "No pong received, connection may be dead", "error");
+
                                     break;
                                 }
                                 waiting_for_pong.store(true, std::sync::atomic::Ordering::SeqCst);
                                 if let Err(e) = write_for_ping.lock().await.send(Message::Ping(vec![1, 2, 3, 4])).await {
-                                    if args_for_ping.debug {
-                                        let log = crate::create_log_entry(
-                                            format!("Ping failed: {}", e),
-                                            "error"
-                                        );
-                                        let _ = tx_for_ping.send(crate::create_tail_event(log));
-                                    }
+                                    create_debug_log_entry(args_for_ping.debug, &tx_for_ping, format!("Ping failed: {e}"), "error");
                                     break;
                                 }
                             }
@@ -627,242 +600,147 @@ pub fn run_ui(
                         let args_for_read = args_with_worker.clone();
                         let write_for_read = write.clone();
                         let _handle = tokio::spawn(async move {
-                            if args_for_read.debug {
-                                let log = crate::create_log_entry(
-                                    "Starting message reading task...".to_string(),
-                                    "debug"
-                                );
-                                let _ = tx_for_read.send(crate::create_tail_event(log));
-                            }
+                            create_debug_log_entry(args_for_read.debug, &tx_for_read, "Starting message reading task...", "debug");
+
                             while let Some(msg) = read.next().await {
-                                if args_for_read.debug {
-                                    let log = crate::create_log_entry(
-                                        "Received a message from WebSocket stream".to_string(),
-                                        "debug"
-                                    );
-                                    let _ = tx_for_read.send(crate::create_tail_event(log));
-                                }
+                                create_debug_log_entry(args_for_read.debug, &tx_for_read, "Received a message from WebSocket stream", "debug");
+
                                 match msg {
                                     Ok(msg) => {
                                         match msg {
                                             Message::Text(text) => {
-                                                if args_for_read.debug {
-                                                    let log = crate::create_log_entry(
-                                                        format!("Received raw WebSocket text message:\n  Raw content: {}\n  Content length: {} bytes\n  Content type: Text",
-                                                            text,
-                                                            text.len()
-                                                        ),
-                                                        "debug"
-                                                    );
-                                                    let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                }
+                                                let msg = format!("Received raw WebSocket text message:\n  Raw content: {text}\n  Content length: {} bytes\n  Content type: Text",
+                                                                  text.len()
+                                                );
+
+                                                create_debug_log_entry(args_for_read.debug, &tx_for_read, msg, "debug");
+
 
                                                 // Try parsing as JSON first
                                                 match serde_json::from_str::<serde_json::Value>(&text) {
                                                     Ok(json) => {
-                                                        if args_for_read.debug {
-                                                            let log = crate::create_log_entry(
-                                                                format!("Successfully parsed as JSON:\n  {}", 
-                                                                    serde_json::to_string_pretty(&json).unwrap_or_default()
-                                                                ),
-                                                                "debug"
-                                                            );
-                                                            let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                        }
+                                                        create_debug_log_entry(
+                                                            args_for_read.debug,
+                                                            &tx_for_read,
+                                                            format!("Successfully parsed as JSON:\n  {}", serde_json::to_string_pretty(&json).unwrap_or_default()),
+                                                            "debug"
+                                                        );
+
                                                     }
                                                     Err(e) => {
-                                                        if args_for_read.debug {
-                                                            let log = crate::create_log_entry(
-                                                                format!("Failed to parse as JSON:\n  Error: {}", e),
-                                                                "debug"
-                                                            );
-                                                            let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                        }
+                                                        create_debug_log_entry(args_for_read.debug, &tx_for_read, format!("Failed to parse as JSON:\n  Error: {e}"), "debug");
                                                     }
                                                 }
 
                                                 // Try parsing as TailEventMessage
                                                 match serde_json::from_str::<TailEventMessage>(&text) {
                                                     Ok(event) => {
-                                                        if args_for_read.debug {
-                                                            let log = crate::create_log_entry(
-                                                                format!("Successfully parsed as TailEventMessage:\n  Outcome: {:?}\n  Script: {:?}\n  Event: {}\n  Logs: {:?}\n  Exceptions: {:?}\n  Timestamp: {}",
-                                                                    event.outcome,
-                                                                    event.script_name,
-                                                                    serde_json::to_string_pretty(&event.event).unwrap_or_default(),
-                                                                    event.logs,
-                                                                    event.exceptions,
-                                                                    event.event_timestamp
-                                                                ),
-                                                                "debug"
-                                                            );
-                                                            let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                        }
+                                                        let msg = format!("Successfully parsed as TailEventMessage:\n  Outcome: {:?}\n  Script: {:?}\n  Event: {}\n  Logs: {:?}\n  Exceptions: {:?}\n  Timestamp: {}",
+                                                                          event.outcome,
+                                                                          event.script_name,
+                                                                          serde_json::to_string_pretty(&event.event).unwrap_or_default(),
+                                                                          event.logs,
+                                                                          event.exceptions,
+                                                                          event.event_timestamp
+                                                        );
+                                                        create_debug_log_entry(args_for_read.debug, &tx_for_read, msg, "debug");
+
                                                         let _ = tx_for_read.send(event);
                                                     }
                                                     Err(e) => {
-                                                        if args_for_read.debug {
-                                                            let log = crate::create_log_entry(
-                                                                format!("Failed to parse as TailEventMessage:\n  Raw message: {}\n  Error: {}\n  Error kind: {:?}\n  Error category: {:?}",
-                                                                    text,
-                                                                    e,
-                                                                    e.classify(),
-                                                                    e.to_string()
-                                                                ),
-                                                                "error"
-                                                            );
-                                                            let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                        }
+                                                        let msg = format!("Failed to parse as TailEventMessage:\n  Raw message: {}\n  Error: {}\n  Error kind: {:?}\n  Error category: {:?}",
+                                                                          text,
+                                                                          e,
+                                                                          e.classify(),
+                                                                          e.to_string()
+                                                        );
+
+                                                        create_debug_log_entry(args_for_read.debug, &tx_for_read, msg, "error");
                                                     }
                                                 }
                                             }
                                             Message::Binary(data) => {
-                                                if args_for_read.debug {
-                                                    let log = crate::create_log_entry(
-                                                        format!("Received binary message of {} bytes", data.len()),
-                                                        "debug"
-                                                    );
-                                                    let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                }
+                                                create_debug_log_entry(args_for_read.debug, &tx_for_read, format!("Received binary message of {} bytes", data.len()), "debug");
 
                                                 // Try to parse binary data as UTF-8 string first
                                                 match String::from_utf8(data) {
                                                     Ok(text) => {
-                                                        if args_for_read.debug {
-                                                            let log = crate::create_log_entry(
-                                                                format!("Successfully converted binary to text:\n{}", text),
-                                                                "debug"
-                                                            );
-                                                            let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                        }
+                                                        create_debug_log_entry(args_for_read.debug, &tx_for_read, format!("Successfully converted binary to text:\n{text}"), "debug");
 
                                                         // Try parsing as TailEventMessage
                                                         match serde_json::from_str::<TailEventMessage>(&text) {
                                                             Ok(event) => {
-                                                                if args_for_read.debug {
-                                                                    let log = crate::create_log_entry(
-                                                                        format!("Successfully parsed binary as TailEventMessage:\n  Outcome: {:?}\n  Script: {:?}\n  Event: {}\n  Logs: {:?}\n  Exceptions: {:?}\n  Timestamp: {}",
-                                                                            event.outcome,
-                                                                            event.script_name,
-                                                                            serde_json::to_string_pretty(&event.event).unwrap_or_default(),
-                                                                            event.logs,
-                                                                            event.exceptions,
-                                                                            event.event_timestamp
-                                                                        ),
-                                                                        "debug"
-                                                                    );
-                                                                    let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                                }
+                                                                let msg = format!("Successfully parsed binary as TailEventMessage:\n  Outcome: {:?}\n  Script: {:?}\n  Event: {}\n  Logs: {:?}\n  Exceptions: {:?}\n  Timestamp: {}",
+                                                                                  event.outcome,
+                                                                                  event.script_name,
+                                                                                  serde_json::to_string_pretty(&event.event).unwrap_or_default(),
+                                                                                  event.logs,
+                                                                                  event.exceptions,
+                                                                                  event.event_timestamp
+                                                                );
+
+                                                                create_debug_log_entry(args_for_read.debug, &tx_for_read, msg, "debug");
+
                                                                 let _ = tx_for_read.send(event);
                                                             }
                                                             Err(e) => {
-                                                                if args_for_read.debug {
-                                                                    let log = crate::create_log_entry(
-                                                                        format!("Failed to parse binary as TailEventMessage:\n  Text: {}\n  Error: {}\n  Error kind: {:?}\n  Error category: {:?}",
-                                                                            text,
-                                                                            e,
-                                                                            e.classify(),
-                                                                            e.to_string()
-                                                                        ),
-                                                                        "error"
-                                                                    );
-                                                                    let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                                }
+                                                                let msg = format!("Failed to parse binary as TailEventMessage:\n  Text: {}\n  Error: {}\n  Error kind: {:?}\n  Error category: {:?}",
+                                                                                  text,
+                                                                                  e,
+                                                                                  e.classify(),
+                                                                                  e.to_string()
+                                                                );
+
+                                                                create_debug_log_entry(args_for_read.debug, &tx_for_read, msg, "error");
                                                             }
                                                         }
                                                     }
                                                     Err(e) => {
-                                                        if args_for_read.debug {
-                                                            let log = crate::create_log_entry(
-                                                                format!("Failed to convert binary to text: {}", e),
-                                                                "error"
-                                                            );
-                                                            let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                        }
+                                                        create_debug_log_entry(args_for_read.debug, &tx_for_read, format!("Failed to convert binary to text: {e}"), "error");
                                                     }
                                                 }
                                             }
                                             Message::Ping(data) => {
-                                                if args_for_read.debug {
-                                                    let log = crate::create_log_entry(
-                                                        format!("Received ping with {} bytes of data", data.len()),
-                                                        "debug"
-                                                    );
-                                                    let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                }
+                                                create_debug_log_entry(args_for_read.debug, &tx_for_read, format!("Received ping with {} bytes of data", data.len()), "debug");
+
                                                 if let Err(e) = write_for_read.lock().await.send(Message::Pong(data)).await {
-                                                    if args_for_read.debug {
-                                                        let log = crate::create_log_entry(
-                                                            format!("Failed to send pong: {}", e),
-                                                            "error"
-                                                        );
-                                                        let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                    }
+                                                    create_debug_log_entry(args_for_read.debug, &tx_for_read, format!("Failed to send pong: {e}"), "error");
                                                 }
                                             }
                                             Message::Pong(_) => {
-                                                if args_for_read.debug {
-                                                    let log = crate::create_log_entry(
-                                                        "Received pong from server".to_string(),
-                                                        "debug"
-                                                    );
-                                                    let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                }
+                                                create_debug_log_entry(args_for_read.debug, &tx_for_read, "Received pong from server", "debug");
+
                                                 waiting_for_pong_clone.store(false, std::sync::atomic::Ordering::SeqCst);
                                             }
                                             Message::Close(frame) => {
-                                                if args_for_read.debug {
-                                                    let reason = frame.map(|f| format!("code: {}, reason: {}", f.code, f.reason)).unwrap_or_default();
-                                                    let log = crate::create_log_entry(
-                                                        format!("Received close frame from server: {}", reason),
-                                                        "debug"
-                                                    );
-                                                    let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                }
+                                                let reason = frame.map(|f| format!("code: {}, reason: {}", f.code, f.reason)).unwrap_or_default();
+
+                                                create_debug_log_entry(args_for_read.debug, &tx_for_read, format!("Received close frame from server: {reason}"), "debug");
                                             }
                                             Message::Frame(frame) => {
-                                                if args_for_read.debug {
-                                                    let log = crate::create_log_entry(
-                                                        format!("Received raw frame: {:?}", frame),
-                                                        "debug"
-                                                    );
-                                                    let _ = tx_for_read.send(crate::create_tail_event(log));
-                                                }
+                                                create_debug_log_entry(args_for_read.debug, &tx_for_read, format!("Received raw frame: {frame:?}"), "debug");
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        if args_for_read.debug {
-                                            let log = crate::create_log_entry(
-                                                format!("WebSocket error:\n  Error: {}\n  Error kind: {:?}",
-                                                    e,
-                                                    e.to_string()
-                                                ),
-                                                "error"
-                                            );
-                                            let _ = tx_for_read.send(crate::create_tail_event(log));
-                                        }
+                                        create_debug_log_entry(
+                                            args_for_read.debug,
+                                            &tx_for_read,
+                                            format!("WebSocket error:\n  Error: {e}\n  Error kind: {:?}", e.to_string()),
+                                            "error"
+                                        );
+
                                         break;
                                     }
                                 }
                             }
-                            if args_for_read.debug {
-                                let log = crate::create_log_entry(
-                                    "Message reading task ended".to_string(),
-                                    "debug"
-                                );
-                                let _ = tx_for_read.send(crate::create_tail_event(log));
-                            }
+
+                            create_debug_log_entry(args_for_read.debug, &tx_for_read, "Message reading task ended", "debug");
                         });
 
                         let tx_for_final = tx_for_ws.clone();
-                        if args_with_worker.debug {
-                            let log = crate::create_log_entry(
-                                "WebSocket connection established, waiting for logs...".to_string(),
-                                "debug"
-                            );
-                            let _ = tx_for_final.send(crate::create_tail_event(log));
-                        }
+
+                        create_debug_log_entry(args_with_worker.debug, &tx_for_final, "WebSocket connection established, waiting for logs...", "debug");
 
                         Ok::<_, anyhow::Error>(())
                     }) {
@@ -872,13 +750,7 @@ pub fn run_ui(
                         }
                         Err(e) => {
                             // Connection failed, show error and return to worker selection
-                            if args_clone.debug {
-                                let log = crate::create_log_entry(
-                                    format!("Failed to connect: {}", e),
-                                    "error"
-                                );
-                                let _ = tx_for_error.send(crate::create_tail_event(log));
-                            }
+                            create_debug_log_entry(args_clone.debug, &tx_for_error, format!("Failed to connect: {e}"), "error");
                             app.state = AppState::SelectingWorker(app.get_workers().to_vec());
                         }
                     }
@@ -889,9 +761,9 @@ pub fn run_ui(
 
         // Check for new log messages
         if let Ok(log) = rx.try_recv() {
-            app.update_status_counts(&log);  // Update status counts before adding the log
+            app.update_status_counts(&log); // Update status counts before adding the log
             app.logs.push(log);
-            app.apply_filter();  // Re-apply filter after adding new log
+            app.apply_filter(); // Re-apply filter after adding new log
         }
 
         // Check if we should exit
@@ -903,13 +775,27 @@ pub fn run_ui(
     Ok(())
 }
 
+fn create_debug_log_entry(
+    debug: bool,
+    sender: &Sender<TailEventMessage>,
+    msg: impl Into<String>,
+    level: &str,
+) {
+    if !debug {
+        return;
+    }
+
+    let log = crate::create_log_entry(msg.into(), level);
+    let _ = sender.send(crate::create_tail_event(log));
+}
+
 #[allow(dead_code)]
 fn format_json_value(value: &serde_json::Value, base_indent: usize) -> String {
     match serde_json::to_string_pretty(value) {
         Ok(formatted) => {
             let mut result = String::new();
             let mut first_line = true;
-            
+
             for line in formatted.lines() {
                 if first_line {
                     // First line (usually just '{' or '[') gets base indentation
@@ -920,7 +806,12 @@ fn format_json_value(value: &serde_json::Value, base_indent: usize) -> String {
                     let content = line.trim_start();
                     // Add 2 spaces of indentation for each level of JSON nesting
                     let additional_indent = line.chars().take_while(|c| c.is_whitespace()).count();
-                    result.push_str(&format!("{:indent$}{}\n", "", content, indent = base_indent + additional_indent * 2));
+                    result.push_str(&format!(
+                        "{:indent$}{}\n",
+                        "",
+                        content,
+                        indent = base_indent + additional_indent * 2
+                    ));
                 }
             }
             // Remove the last newline
@@ -929,7 +820,7 @@ fn format_json_value(value: &serde_json::Value, base_indent: usize) -> String {
             }
             result
         }
-        Err(_) => format!("{:indent$}{}", "", value.to_string(), indent = base_indent)
+        Err(_) => format!("{:indent$}{}", "", value.to_string(), indent = base_indent),
     }
 }
 
@@ -943,10 +834,7 @@ fn render_worker_list(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect)
     let items: Vec<ListItem> = app
         .get_workers()
         .iter()
-        .map(|worker| {
-            ListItem::new(worker.as_str())
-                .style(Style::default().fg(Color::White))
-        })
+        .map(|worker| ListItem::new(worker.as_str()).style(Style::default().fg(Color::White)))
         .collect();
 
     let list = List::new(items)
@@ -967,76 +855,80 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Height for frequency chart
-            Constraint::Min(0),     // Remaining space for logs
+            Constraint::Length(3), // Height for frequency chart
+            Constraint::Min(0),    // Remaining space for logs
         ])
         .split(area);
 
     // Render frequency chart
-    let total_requests = app.status_counts.success + app.status_counts.client_err + 
-                        app.status_counts.server_err + app.status_counts.other;
-    
+    let total_requests = app.status_counts.success
+        + app.status_counts.client_err
+        + app.status_counts.server_err
+        + app.status_counts.other;
+
     let chart_text = if total_requests > 0 {
         vec![
             Line::from(vec![
-                Span::styled(format!("2xx: {:<5}", app.status_counts.success), 
-                    Style::default().fg(Color::Green)),
+                Span::styled(
+                    format!("2xx: {:<5}", app.status_counts.success),
+                    Style::default().fg(Color::Green),
+                ),
                 Span::raw(" | "),
-                Span::styled(format!("4xx: {:<5}", app.status_counts.client_err),
-                    Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("4xx: {:<5}", app.status_counts.client_err),
+                    Style::default().fg(Color::Yellow),
+                ),
                 Span::raw(" | "),
-                Span::styled(format!("5xx: {:<5}", app.status_counts.server_err),
-                    Style::default().fg(Color::Red)),
+                Span::styled(
+                    format!("5xx: {:<5}", app.status_counts.server_err),
+                    Style::default().fg(Color::Red),
+                ),
                 Span::raw(" | "),
-                Span::styled(format!("Other: {:<5}", app.status_counts.other),
-                    Style::default().fg(Color::Gray)),
-                Span::raw(format!(" | Total: {}", total_requests)),
+                Span::styled(
+                    format!("Other: {:<5}", app.status_counts.other),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::raw(format!(" | Total: {total_requests}")),
             ]),
             Line::from(vec![
                 Span::styled(
                     "█".repeat((app.status_counts.success * 50 / total_requests).max(1)),
-                    Style::default().fg(Color::Green)
+                    Style::default().fg(Color::Green),
                 ),
                 Span::styled(
                     "█".repeat((app.status_counts.client_err * 50 / total_requests).max(1)),
-                    Style::default().fg(Color::Yellow)
+                    Style::default().fg(Color::Yellow),
                 ),
                 Span::styled(
                     "█".repeat((app.status_counts.server_err * 50 / total_requests).max(1)),
-                    Style::default().fg(Color::Red)
+                    Style::default().fg(Color::Red),
                 ),
                 Span::styled(
                     "█".repeat((app.status_counts.other * 50 / total_requests).max(1)),
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(Color::Gray),
                 ),
             ]),
         ]
     } else {
-        vec![Line::from(vec![
-            Span::raw("No requests recorded yet")
-        ])]
+        vec![Line::from(vec![Span::raw("No requests recorded yet")])]
     };
 
-    let chart = Paragraph::new(Text::from(chart_text))
-        .block(Block::default()
+    let chart = Paragraph::new(Text::from(chart_text)).block(
+        Block::default()
             .borders(Borders::NONE)
-            .style(Style::default()));
+            .style(Style::default()),
+    );
 
     f.render_widget(chart, chunks[0]);
 
     // Split remaining area for logs and details if details are shown
     let log_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(
-            if app.show_details {
-                vec![
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(50),
-                ]
-            } else {
-                vec![Constraint::Percentage(100)]
-            }
-        )
+        .constraints(if app.show_details {
+            vec![Constraint::Percentage(50), Constraint::Percentage(50)]
+        } else {
+            vec![Constraint::Percentage(100)]
+        })
         .split(chunks[1]);
 
     // Render main log list
@@ -1056,12 +948,19 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
 
             let event_info = if let Some(event) = &log.event {
                 if let Some(request) = event.get("request") {
-                    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("UNKNOWN");
-                    let url = request.get("url").and_then(|u| u.as_str()).unwrap_or("UNKNOWN");
-                    let status = event.get("response")
+                    let method = request
+                        .get("method")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("UNKNOWN");
+                    let url = request
+                        .get("url")
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("UNKNOWN");
+                    let status = event
+                        .get("response")
                         .and_then(|r| r.get("status"))
                         .and_then(|s| s.as_u64());
-                    
+
                     let style = if let Some(status_code) = status {
                         match status_code {
                             200..=299 => Style::default().fg(Color::Green),
@@ -1073,11 +972,27 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
                         Style::default().fg(Color::White)
                     };
 
-                    (format!("{} {} ({})", method, url, status.map(|s| s.to_string()).unwrap_or_else(|| "---".to_string())), style)
+                    (
+                        format!(
+                            "{} {} ({})",
+                            method,
+                            url,
+                            status
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "---".to_string())
+                        ),
+                        style,
+                    )
                 } else if let Some(cron) = event.get("cron") {
-                    (format!("CRON: {}", cron.as_str().unwrap_or("UNKNOWN")), Style::default().fg(Color::Cyan))
+                    (
+                        format!("CRON: {}", cron.as_str().unwrap_or("UNKNOWN")),
+                        Style::default().fg(Color::Cyan),
+                    )
                 } else if let Some(queue) = event.get("queue") {
-                    (format!("QUEUE: {}", queue.as_str().unwrap_or("UNKNOWN")), Style::default().fg(Color::Magenta))
+                    (
+                        format!("QUEUE: {}", queue.as_str().unwrap_or("UNKNOWN")),
+                        Style::default().fg(Color::Magenta),
+                    )
                 } else {
                     ("EVENT".to_string(), Style::default().fg(Color::White))
                 }
@@ -1085,14 +1000,20 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
                 ("".to_string(), Style::default().fg(Color::White))
             };
 
-            let message = log.logs.iter()
-                .map(|l| format!("[{}] {}", 
-                    l.level, 
-                    l.message.iter()
-                        .map(|m| m.to_string().trim_matches('"').to_string())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ))
+            let message = log
+                .logs
+                .iter()
+                .map(|l| {
+                    format!(
+                        "[{}] {}",
+                        l.level,
+                        l.message
+                            .iter()
+                            .map(|m| m.to_string().trim_matches('"').to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(" ");
 
@@ -1103,18 +1024,10 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
             let display_text = if !event_info.0.is_empty() {
                 format!(
                     "{} | {} | {} | {}",
-                    timestamp,
-                    outcome_str,
-                    event_info.0,
-                    message
+                    timestamp, outcome_str, event_info.0, message
                 )
             } else {
-                format!(
-                    "{} | {} | {}",
-                    timestamp,
-                    outcome_str,
-                    message
-                )
+                format!("{} | {} | {}", timestamp, outcome_str, message)
             };
 
             ListItem::new(display_text).style(event_info.1)
@@ -1122,18 +1035,21 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
         .collect();
 
     let logs_list = List::new(logs)
-        .block(Block::default()
-            .title(if !app.detail_focused { "Logs (focused)" } else { "Logs" })
-            .borders(Borders::NONE)
-            .border_type(BorderType::Plain)
+        .block(
+            Block::default()
+                .title(if !app.detail_focused {
+                    "Logs (focused)"
+                } else {
+                    "Logs"
+                })
+                .borders(Borders::NONE)
+                .border_type(BorderType::Plain),
         )
-        .style(
-            if !app.detail_focused {
-                Style::default().fg(Color::White)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            }
-        )
+        .style(if !app.detail_focused {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        })
         .highlight_style(Style::default().fg(Color::Black).bg(Color::White));
 
     f.render_stateful_widget(logs_list, log_chunks[0], &mut app.log_state.clone());
@@ -1148,59 +1064,70 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
                 let timestamp = DateTime::<Utc>::from_timestamp(log.event_timestamp, 0)
                     .unwrap_or_default()
                     .format("%Y-%m-%d %H:%M:%S%.3f");
-                detail_text.push(format!("Timestamp: {}", timestamp));
+                detail_text.push(format!("Timestamp: {timestamp}"));
 
                 // Add outcome
                 detail_text.push(format!("Outcome: {:?}", log.outcome));
 
                 // Add script name if present
                 if let Some(script) = &log.script_name {
-                    detail_text.push(format!("Script: {}", script));
+                    detail_text.push(format!("Script: {script}"));
                 }
 
                 // Add event details with proper JSON formatting
                 if let Some(event) = &log.event {
                     detail_text.push("\nEvent Details:\n".to_string());
                     let json_value = serde_json::json!(event);
-                    
+
                     fn format_json(value: &serde_json::Value, depth: usize) -> String {
                         let indent = "\u{00A0}\u{00A0}\u{00A0}\u{00A0}".repeat(depth);
-                        
+
                         match value {
                             serde_json::Value::Object(map) => {
                                 let mut lines = Vec::new();
                                 lines.push(format!("{}{{", indent));
-                                
+
                                 for (k, v) in map {
                                     match v {
                                         serde_json::Value::Object(_) => {
-                                            lines.push(format!("{}{}\"{}\": {{", 
-                                                indent, "\u{00A0}\u{00A0}\u{00A0}\u{00A0}", k));
+                                            lines.push(format!(
+                                                "{}{}\"{}\": {{",
+                                                indent, "\u{00A0}\u{00A0}\u{00A0}\u{00A0}", k
+                                            ));
                                             lines.push(format_json(v, depth + 1));
-                                            lines.push(format!("{}{}}},", 
-                                                indent, "\u{00A0}\u{00A0}\u{00A0}\u{00A0}"));
-                                        },
+                                            lines.push(format!(
+                                                "{}{}}},",
+                                                indent, "\u{00A0}\u{00A0}\u{00A0}\u{00A0}"
+                                            ));
+                                        }
                                         _ => {
                                             let value_str = match v {
-                                                serde_json::Value::String(s) => format!("\"{}\"", s),
+                                                serde_json::Value::String(s) => {
+                                                    format!("\"{}\"", s)
+                                                }
                                                 serde_json::Value::Number(n) => n.to_string(),
                                                 serde_json::Value::Bool(b) => b.to_string(),
                                                 serde_json::Value::Null => "null".to_string(),
                                                 _ => v.to_string(),
                                             };
-                                            lines.push(format!("{}{}\"{}\": {},",
-                                                indent, "\u{00A0}\u{00A0}\u{00A0}\u{00A0}", k, value_str));
+                                            lines.push(format!(
+                                                "{}{}\"{}\": {},",
+                                                indent,
+                                                "\u{00A0}\u{00A0}\u{00A0}\u{00A0}",
+                                                k,
+                                                value_str
+                                            ));
                                         }
                                     }
                                 }
-                                
+
                                 lines.push(format!("{}}}", indent));
                                 lines.join("\n")
-                            },
+                            }
                             _ => value.to_string(),
                         }
                     }
-                    
+
                     let formatted = format_json(&json_value, 1);
                     detail_text.push(formatted);
                     detail_text.push("\n".to_string());
@@ -1215,7 +1142,7 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
                             if let Ok(json_str) = serde_json::to_string_pretty(message) {
                                 let formatted_json = json_str
                                     .lines()
-                                    .map(|line| format!("        {}", line))
+                                    .map(|line| format!("        {line}"))
                                     .collect::<Vec<_>>()
                                     .join("\n");
                                 detail_text.push(formatted_json);
@@ -1232,7 +1159,7 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
                         if let Ok(json_str) = serde_json::to_string_pretty(&exception.message) {
                             let formatted_json = json_str
                                 .lines()
-                                .map(|line| format!("        {}", line))
+                                .map(|line| format!("        {line}"))
                                 .collect::<Vec<_>>()
                                 .join("\n");
                             detail_text.push(formatted_json);
@@ -1242,44 +1169,44 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
 
                 let detail_text = detail_text.join("\n");
                 let mut lines = Vec::new();
-                
+
                 // Convert the text into styled spans
                 for line in detail_text.lines() {
                     let mut line_spans = Vec::new();
                     let mut chars = line.chars().peekable();
-                    
+
                     while let Some(c) = chars.next() {
                         match c {
                             '{' | '}' | ':' | ',' => {
                                 line_spans.push(Span::styled(
                                     c.to_string(),
-                                    Style::default().fg(Color::Cyan)
+                                    Style::default().fg(Color::Cyan),
                                 ));
-                            },
+                            }
                             '"' => {
                                 let mut content = String::new();
                                 content.push('"');
-                                
+
                                 while let Some(next_char) = chars.next() {
                                     content.push(next_char);
                                     if next_char == '"' {
                                         break;
                                     }
                                 }
-                                
+
                                 // If this is a key (followed by a colon)
                                 if chars.peek().map_or(false, |&c| c == ':') {
                                     line_spans.push(Span::styled(
                                         content,
-                                        Style::default().fg(Color::Magenta)
+                                        Style::default().fg(Color::Magenta),
                                     ));
                                 } else {
                                     line_spans.push(Span::styled(
                                         content,
-                                        Style::default().fg(Color::Green)
+                                        Style::default().fg(Color::Green),
                                     ));
                                 }
-                            },
+                            }
                             c if c.is_ascii_digit() || c == '-' || c == '.' => {
                                 let mut num = String::new();
                                 num.push(c);
@@ -1290,25 +1217,29 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
                                         break;
                                     }
                                 }
-                                line_spans.push(Span::styled(
-                                    num,
-                                    Style::default().fg(Color::Yellow)
-                                ));
-                            },
+                                line_spans
+                                    .push(Span::styled(num, Style::default().fg(Color::Yellow)));
+                            }
                             c if c.is_whitespace() => {
                                 line_spans.push(Span::raw(c.to_string()));
-                            },
+                            }
                             _ => {
                                 let mut word = String::new();
                                 word.push(c);
                                 while let Some(&next_char) = chars.peek() {
-                                    if !next_char.is_whitespace() && next_char != '"' && next_char != '{' && next_char != '}' && next_char != ':' && next_char != ',' {
+                                    if !next_char.is_whitespace()
+                                        && next_char != '"'
+                                        && next_char != '{'
+                                        && next_char != '}'
+                                        && next_char != ':'
+                                        && next_char != ','
+                                    {
                                         word.push(chars.next().unwrap());
                                     } else {
                                         break;
                                     }
                                 }
-                                
+
                                 let style = match word.as_str() {
                                     "true" | "false" => Style::default().fg(Color::Blue),
                                     "null" => Style::default().fg(Color::DarkGray),
@@ -1320,27 +1251,30 @@ fn render_logs(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
                     }
                     lines.push(Line::from(line_spans));
                 }
-                
+
                 let paragraph = Paragraph::new(Text::from(lines))
-                    .block(Block::default()
-                        .title(if app.detail_focused { "Details (focused)" } else { "Details" })
-                        .borders(Borders::NONE)
+                    .block(
+                        Block::default()
+                            .title(if app.detail_focused {
+                                "Details (focused)"
+                            } else {
+                                "Details"
+                            })
+                            .borders(Borders::NONE),
                     )
                     .wrap(Wrap { trim: true })
                     .scroll((app.detail_scroll, 0))
-                    .style(
-                        if app.detail_focused {
-                            Style::default().fg(Color::White)
-                        } else {
-                            Style::default().fg(Color::DarkGray)
-                        }
-                    );
+                    .style(if app.detail_focused {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    });
 
                 f.render_widget(
                     paragraph.block(
                         Block::default()
                             .style(Style::default())
-                            .borders(Borders::NONE)
+                            .borders(Borders::NONE),
                     ),
                     log_chunks[1],
                 );
@@ -1359,7 +1293,7 @@ fn render_status_bar(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) 
     let mut status_text = match &app.state {
         AppState::SelectingWorker(_) => vec![
             Span::raw("Status: "),
-            Span::styled("Selecting worker", Style::default().fg(Color::Yellow))
+            Span::styled("Selecting worker", Style::default().fg(Color::Yellow)),
         ],
         AppState::Connecting => vec![
             Span::raw("Status: "),
@@ -1367,8 +1301,8 @@ fn render_status_bar(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) 
             Span::raw(" to worker "),
             Span::styled(
                 app.selected_worker.as_deref().unwrap_or("unknown"),
-                Style::default().fg(Color::Cyan)
-            )
+                Style::default().fg(Color::Cyan),
+            ),
         ],
         AppState::Viewing => vec![
             Span::raw("Status: "),
@@ -1376,8 +1310,8 @@ fn render_status_bar(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) 
             Span::raw(" to worker "),
             Span::styled(
                 app.selected_worker.as_deref().unwrap_or("unknown"),
-                Style::default().fg(Color::Cyan)
-            )
+                Style::default().fg(Color::Cyan),
+            ),
         ],
     };
 
@@ -1393,8 +1327,8 @@ fn render_status_bar(f: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) 
                     StatusFilter::Other => "Other",
                     StatusFilter::All => "All",
                 },
-                Style::default().fg(Color::Yellow)
-            )
+                Style::default().fg(Color::Yellow),
+            ),
         ]);
     }
 
@@ -1415,9 +1349,9 @@ fn render_ui(f: &mut Frame<'_>, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10),  // Worker list
-            Constraint::Min(0),      // Logs
-            Constraint::Length(1),   // Status bar
+            Constraint::Length(10), // Worker list
+            Constraint::Min(0),     // Logs
+            Constraint::Length(1),  // Status bar
         ])
         .split(f.size());
 

@@ -2,31 +2,31 @@
 // Provides real-time monitoring of Cloudflare Workers logs with filtering capabilities
 // and multiple output formats.
 
-mod types;
-mod tui;
 mod config;
+mod tui;
+mod types;
 
+use anyhow::{anyhow, Context, Result};
+use clap::Parser;
+use config::Config;
+use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+use crossterm::ExecutableCommand;
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use reqwest;
 use std::fs;
 use std::io;
 use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use anyhow::{Result, Context};
-use clap::Parser;
-use reqwest;
-use config::Config;
-use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
-use crossterm::ExecutableCommand;
 
-use crate::types::*;
 use crate::tui::{run_ui, App};
+use crate::types::*;
 
 // Command-line argument structure for fogwatch
 #[derive(Parser, Debug, Clone)]
 #[command(
-    author, 
-    version, 
+    author,
+    version,
     about = "A real-time log viewer for Cloudflare Workers with filtering and multiple output formats",
     long_about = "Monitor your Cloudflare Workers logs in real-time with advanced filtering, multiple output formats, and interactive worker selection."
 )]
@@ -76,7 +76,7 @@ struct Args {
 }
 
 /// Creates a new tail session with Cloudflare's API
-/// 
+///
 /// # Arguments
 /// * `client` - HTTP client for making API requests
 /// * `args` - Command line arguments containing API credentials and filters
@@ -99,12 +99,15 @@ async fn create_tail(
 
     if args.debug {
         let log = create_log_entry(
-            format!("Creating tail session for worker '{}'...", args.worker.as_ref().unwrap()),
-            "debug"
+            format!(
+                "Creating tail session for worker '{}'...",
+                args.worker.as_ref().unwrap()
+            ),
+            "debug",
         );
         tx.send(create_tail_event(log)).ok();
     }
-    
+
     let response = client
         .post(&url)
         .json(&TailRequest { filters })
@@ -114,8 +117,8 @@ async fn create_tail(
 
     if args.debug {
         let log = create_log_entry(
-            format!("HTTP Response: {} for POST {}", response.status(), url),
-            "debug"
+            format!("HTTP Response: {} for POST {url}", response.status()),
+            "debug",
         );
         tx.send(create_tail_event(log)).ok();
     }
@@ -124,23 +127,20 @@ async fn create_tail(
         let status = response.status();
         let error_text = response.text().await?;
         if args.debug {
-            let log = create_log_entry(
-                format!("Error response body: {}", error_text),
-                "debug"
-            );
+            let log = create_log_entry(format!("Error response body: {error_text}"), "debug");
             tx.send(create_tail_event(log)).ok();
         }
-        return Err(anyhow::anyhow!("HTTP error: {} {}", status, error_text));
+        return Err(anyhow!("HTTP error: {status} {error_text}"));
     }
 
     let text = response.text().await?;
     let data: CloudflareResponse<TailCreationResponse> = serde_json::from_str(&text)?;
-    
+
     Ok(data.result)
 }
 
 /// Converts command-line arguments into Cloudflare API filter format
-/// 
+///
 /// Processes the following filter types:
 /// - Sampling rate (0.0 to 1.0)
 /// - HTTP methods (GET, POST, etc)
@@ -153,10 +153,10 @@ async fn create_tail(
 /// # Returns
 /// * `Vec<TailFilter>` - Collection of filters in Cloudflare API format
 fn parse_filters(args: &Args) -> Vec<TailFilter> {
-    let mut filters = Vec::new();
-
-    // Always set sampling rate to 1.0 to get all events
-    filters.push(TailFilter::SamplingRate { sampling_rate: 1.0 });
+    let mut filters = vec![
+        // Always set sampling rate to 1.0 to get all events
+        TailFilter::SamplingRate { sampling_rate: 1.0 },
+    ];
 
     // Add method filter if specified
     if let Some(methods) = &args.method {
@@ -231,7 +231,7 @@ fn create_log_entry(message: String, level: &str) -> LogEntry {
         level: level.to_string(),
         timestamp: SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("system time cannot be behind unix epoch")
             .as_secs() as i64,
     }
 }
@@ -266,61 +266,68 @@ fn create_tail_event(log_entry: LogEntry) -> TailEventMessage {
 ///
 /// # Returns
 /// * `Result<Vec<WorkerScript>>` - List of available worker scripts
-async fn fetch_workers(client: &reqwest::Client, account_id: &str, debug: bool, tx: &mpsc::Sender<TailEventMessage>) -> Result<Vec<WorkerScript>> {
-    let url = format!(
-        "https://api.cloudflare.com/client/v4/accounts/{}/workers/scripts",
-        account_id
-    );
-    
+async fn fetch_workers(
+    client: &reqwest::Client,
+    account_id: &str,
+    debug: bool,
+    tx: &mpsc::Sender<TailEventMessage>,
+) -> Result<Vec<WorkerScript>> {
+    let url = format!("https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/scripts");
+
     let response = match client
         .get(&url)
         .header("Accept", "application/json")
         .send()
-        .await {
-            Ok(resp) => {
-                if debug {
-                    let log = create_log_entry(
-                        format!("HTTP Response: {} for GET {}", resp.status(), url),
-                        "debug"
-                    );
-                    tx.send(create_tail_event(log)).ok();
-                }
-                resp
-            },
-            Err(e) => {
-                if debug {
-                    let log = create_log_entry(
-                        format!("Error details: {}", e),
-                        "debug"
-                    );
-                    tx.send(create_tail_event(log)).ok();
-                }
-                if e.is_connect() {
-                    return Err(anyhow::anyhow!("Could not connect to Cloudflare API. Please check your internet connection."));
-                } else if e.is_timeout() {
-                    return Err(anyhow::anyhow!("Connection to Cloudflare API timed out. Please try again."));
-                } else {
-                    return Err(anyhow::anyhow!("Network error: {}. Please check your connection and try again.", e));
-                }
+        .await
+    {
+        Ok(resp) => {
+            if debug {
+                let log = create_log_entry(
+                    format!("HTTP Response: {} for GET {url}", resp.status()),
+                    "debug",
+                );
+                tx.send(create_tail_event(log)).ok();
             }
-        };
+            resp
+        }
+        Err(e) => {
+            if debug {
+                let log = create_log_entry(format!("Error details: {e}"), "debug");
+                tx.send(create_tail_event(log)).ok();
+            }
+            if e.is_connect() {
+                return Err(anyhow!(
+                    "Could not connect to Cloudflare API. Please check your internet connection."
+                ));
+            } else if e.is_timeout() {
+                return Err(anyhow!(
+                    "Connection to Cloudflare API timed out. Please try again."
+                ));
+            } else {
+                return Err(anyhow!(
+                    "Network error: {e}. Please check your connection and try again."
+                ));
+            }
+        }
+    };
 
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await?;
         if debug {
-            let log = create_log_entry(
-                format!("Error response body: {}", error_text),
-                "debug"
-            );
+            let log = create_log_entry(format!("Error response body: {error_text}"), "debug");
             tx.send(create_tail_event(log)).ok();
         }
         return match status.as_u16() {
-            401 => Err(anyhow::anyhow!("Authentication failed. Please check your API token.")),
-            403 => Err(anyhow::anyhow!("Access denied. Please verify your account ID and API token permissions.")),
-            404 => Err(anyhow::anyhow!("Account not found. Please verify your account ID.")),
-            429 => Err(anyhow::anyhow!("Rate limit exceeded. Please try again later.")),
-            _ => Err(anyhow::anyhow!("HTTP error {}: {}", status, error_text)),
+            401 => Err(anyhow!(
+                "Authentication failed. Please check your API token."
+            )),
+            403 => Err(anyhow!(
+                "Access denied. Please verify your account ID and API token permissions."
+            )),
+            404 => Err(anyhow!("Account not found. Please verify your account ID.")),
+            429 => Err(anyhow!("Rate limit exceeded. Please try again later.")),
+            _ => Err(anyhow!("HTTP error {status}: {error_text}")),
         };
     }
 
@@ -328,27 +335,25 @@ async fn fetch_workers(client: &reqwest::Client, account_id: &str, debug: bool, 
         Ok(resp) => resp,
         Err(e) => {
             if debug {
-                let log = create_log_entry(
-                    format!("Error details: {}", e),
-                    "debug"
-                );
+                let log = create_log_entry(format!("Error details: {e}"), "debug");
                 tx.send(create_tail_event(log)).ok();
             }
-            return Err(anyhow::anyhow!("Failed to parse Cloudflare API response. This might be a temporary issue, please try again."));
+            return Err(anyhow!("Failed to parse Cloudflare API response. This might be a temporary issue, please try again."));
         }
     };
-    
+
     if !response.success {
-        let error_msg = response.errors
+        let error_msg = response
+            .errors
             .iter()
             .map(|e| format!("{}: {}", e.code, e.message))
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(anyhow::anyhow!("Cloudflare API error: {}", error_msg));
+        return Err(anyhow!("Cloudflare API error: {error_msg}"));
     }
 
     if response.result.is_empty() {
-        return Err(anyhow::anyhow!("No workers found in your account. Please make sure you have deployed at least one worker."));
+        return Err(anyhow!("No workers found in your account. Please make sure you have deployed at least one worker."));
     }
 
     Ok(response.result)
@@ -383,7 +388,7 @@ fn main() -> Result<()> {
 
     // Load configuration
     let mut config = Config::load()?;
-    
+
     // Track credential sources for user feedback
     let mut token_source = "default";
     let mut account_id_source = "default";
@@ -407,8 +412,9 @@ fn main() -> Result<()> {
             token_source = "config file";
         }
         config.auth.api_token.clone()
-    }.context("API token not provided")?;
-    
+    }
+    .context("API token not provided")?;
+
     let account_id = if args.account_id.is_some() {
         account_id_source = "command line";
         args.account_id.clone()
@@ -417,12 +423,13 @@ fn main() -> Result<()> {
             account_id_source = "config file";
         }
         config.auth.account_id.clone()
-    }.context("Account ID not provided")?;
+    }
+    .context("Account ID not provided")?;
 
     // Show credential sources
     println!("Using credentials from:");
-    println!("  API token    : {}", token_source);
-    println!("  Account ID   : {}", account_id_source);
+    println!("  API token    : {token_source}");
+    println!("  Account ID   : {account_id_source}");
     println!();
 
     // Create HTTP client
@@ -431,8 +438,8 @@ fn main() -> Result<()> {
             let mut headers = reqwest::header::HeaderMap::new();
             headers.insert(
                 reqwest::header::AUTHORIZATION,
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
-                    .context("Invalid API token format")?
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                    .context("Invalid API token format")?,
             );
             headers
         })
@@ -448,20 +455,19 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     // Before run_ui call, fetch the workers
-    let workers = match rt.block_on(async {
-        fetch_workers(&client, &account_id, args.debug, &tx).await
-    }) {
-        Ok(workers) => workers.into_iter().map(|w| w.id).collect::<Vec<_>>(),
-        Err(e) => {
-            eprintln!("Failed to fetch workers: {}", e);
-            vec![]
-        }
-    };
+    let workers =
+        match rt.block_on(async { fetch_workers(&client, &account_id, args.debug, &tx).await }) {
+            Ok(workers) => workers.into_iter().map(|w| w.id).collect::<Vec<_>>(),
+            Err(e) => {
+                eprintln!("Failed to fetch workers: {e}");
+                vec![]
+            }
+        };
 
     run_ui(
         &rt,
         &mut terminal,
-        App::new(workers),  // Pass the fetched workers
+        App::new(workers), // Pass the fetched workers
         rx,
         &client,
         &account_id,

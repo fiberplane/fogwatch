@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -112,7 +112,9 @@ impl std::str::FromStr for OutputFormat {
             "pretty" => Ok(OutputFormat::Pretty),
             "json" => Ok(OutputFormat::Json),
             "compact" => Ok(OutputFormat::Compact),
-            _ => Err(format!("Unknown output format: {}. Valid formats are: pretty, json, compact", s))
+            _ => Err(format!(
+                "Unknown output format: {s}. Valid formats are: pretty, json, compact"
+            )),
         }
     }
 }

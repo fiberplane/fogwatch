@@ -1,7 +1,7 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use anyhow::{Result, Context};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Auth {
@@ -149,41 +149,80 @@ impl Default for Config {
 }
 
 // Default value functions
-fn default_theme() -> String { "dark".to_string() }
-fn default_detail_width() -> u8 { 50 }
-fn default_max_log_entries() -> usize { 1000 }
-fn default_timestamp_format() -> String { "RFC3339".to_string() }
-fn default_true() -> bool { true }
-fn default_false() -> bool { false }
-fn default_log_level() -> String { "info".to_string() }
-fn default_reconnect_interval() -> u64 { 5 }
-fn default_batch_size() -> usize { 100 }
-fn default_environments() -> Vec<String> { vec!["production".to_string()] }
-fn default_websocket_timeout() -> u64 { 30 }
-fn default_max_retry_attempts() -> u32 { 3 }
-fn default_log_file() -> String { "~/.fogwatch/logs".to_string() }
+fn default_theme() -> String {
+    "dark".to_string()
+}
+fn default_detail_width() -> u8 {
+    50
+}
+fn default_max_log_entries() -> usize {
+    1000
+}
+fn default_timestamp_format() -> String {
+    "RFC3339".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
+fn default_log_level() -> String {
+    "info".to_string()
+}
+fn default_reconnect_interval() -> u64 {
+    5
+}
+fn default_batch_size() -> usize {
+    100
+}
+fn default_environments() -> Vec<String> {
+    vec!["production".to_string()]
+}
+fn default_websocket_timeout() -> u64 {
+    30
+}
+fn default_max_retry_attempts() -> u32 {
+    3
+}
+fn default_log_file() -> String {
+    "~/.fogwatch/logs".to_string()
+}
 
 impl Config {
     pub fn load() -> Result<Self> {
         // Try loading from project directory first
         let project_config = std::env::current_dir()?.join("fogwatch.toml");
-        
+
         // Then try user config directory
         let user_config = Self::get_config_path()?;
-        
+
         // Load and merge configs in order of precedence
         let config = if project_config.exists() {
-            let config_str = fs::read_to_string(&project_config)
-                .with_context(|| format!("Failed to read project config file: {}", project_config.display()))?;
-            
-            toml::from_str(&config_str)
-                .with_context(|| format!("Failed to parse project config file: {}", project_config.display()))?
+            let config_str = fs::read_to_string(&project_config).with_context(|| {
+                format!(
+                    "Failed to read project config file: {}",
+                    project_config.display()
+                )
+            })?;
+
+            toml::from_str(&config_str).with_context(|| {
+                format!(
+                    "Failed to parse project config file: {}",
+                    project_config.display()
+                )
+            })?
         } else if user_config.exists() {
-            let config_str = fs::read_to_string(&user_config)
-                .with_context(|| format!("Failed to read user config file: {}", user_config.display()))?;
-            
-            toml::from_str(&config_str)
-                .with_context(|| format!("Failed to parse user config file: {}", user_config.display()))?
+            let config_str = fs::read_to_string(&user_config).with_context(|| {
+                format!("Failed to read user config file: {}", user_config.display())
+            })?;
+
+            toml::from_str(&config_str).with_context(|| {
+                format!(
+                    "Failed to parse user config file: {}",
+                    user_config.display()
+                )
+            })?
         } else {
             Config::default()
         };
@@ -196,37 +235,43 @@ impl Config {
         // Try to save to project directory first
         let project_config = std::env::current_dir()?.join("fogwatch.toml");
         if project_config.exists() {
-            let config_str = toml::to_string_pretty(self)
-                .context("Failed to serialize config")?;
-            
-            fs::write(&project_config, config_str)
-                .with_context(|| format!("Failed to write project config file: {}", project_config.display()))?;
-            
+            let config_str = toml::to_string_pretty(self).context("Failed to serialize config")?;
+
+            fs::write(&project_config, config_str).with_context(|| {
+                format!(
+                    "Failed to write project config file: {}",
+                    project_config.display()
+                )
+            })?;
+
             return Ok(());
         }
 
         // Fall back to user config directory
         let user_config = Self::get_config_path()?;
-        
+
         // Create parent directories if they don't exist
         if let Some(parent) = user_config.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
         }
 
-        let config_str = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
-        
-        fs::write(&user_config, config_str)
-            .with_context(|| format!("Failed to write user config file: {}", user_config.display()))?;
-        
+        let config_str = toml::to_string_pretty(self).context("Failed to serialize config")?;
+
+        fs::write(&user_config, config_str).with_context(|| {
+            format!(
+                "Failed to write user config file: {}",
+                user_config.display()
+            )
+        })?;
+
         Ok(())
     }
 
     fn get_config_path() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .context("Failed to determine home directory")?;
-        
+        let home = dirs::home_dir().context("Failed to determine home directory")?;
+
         Ok(home.join(".config").join("fogwatch").join("config.toml"))
     }
 
@@ -239,4 +284,4 @@ impl Config {
             self.auth.account_id = Some(account_id);
         }
     }
-} 
+}
