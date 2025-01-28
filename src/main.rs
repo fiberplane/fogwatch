@@ -9,7 +9,7 @@ mod types;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use config::Config;
-use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+use crossterm::terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -464,7 +464,7 @@ fn main() -> Result<()> {
             }
         };
 
-    run_ui(
+    let ui_result = run_ui(
         &rt,
         &mut terminal,
         App::new(workers), // Pass the fetched workers
@@ -475,7 +475,15 @@ fn main() -> Result<()> {
         &args,
         &config,
         tx,
-    )?;
+    );
+
+    // Cleanup terminal state
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    // After cleanup, check and propagate any errors from the UI
+    ui_result?;
 
     Ok(())
 }
