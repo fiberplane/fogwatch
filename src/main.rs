@@ -9,13 +9,8 @@ mod types;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use config::Config;
-use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
-use crossterm::ExecutableCommand;
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
 use reqwest;
 use std::fs;
-use std::io;
 use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -446,13 +441,11 @@ fn main() -> Result<()> {
         .build()
         .context("Failed to create HTTP client")?;
 
-    // Run TUI with merged configuration
-    enable_raw_mode()?;
-    io::stdout().execute(EnterAlternateScreen)?;
-
     let (tx, rx) = mpsc::channel();
     let rt = tokio::runtime::Runtime::new()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+
+    // this call enables raw mode and enters the alternative screen
+    let mut terminal = ratatui::init();
 
     // Before run_ui call, fetch the workers
     let workers =
@@ -476,6 +469,12 @@ fn main() -> Result<()> {
         &config,
         tx,
     )?;
+
+    // disable raw mode and leave the alternative screen
+    if let Err(err) = ratatui::try_restore() {
+        eprintln!("\n\n\nfailed to restore terminal: {err}");
+        eprintln!("try restarting your terminal\n");
+    }
 
     Ok(())
 }

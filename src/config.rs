@@ -161,12 +161,16 @@ fn default_max_log_entries() -> usize {
 fn default_timestamp_format() -> String {
     "RFC3339".to_string()
 }
+
+// default true and false functions are required as serde does not support literals in their `default` attribute
+// https://github.com/serde-rs/serde/issues/368
 fn default_true() -> bool {
     true
 }
 fn default_false() -> bool {
     false
 }
+
 fn default_log_level() -> String {
     "info".to_string()
 }

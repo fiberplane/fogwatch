@@ -1353,7 +1353,7 @@ fn render_ui(f: &mut Frame<'_>, app: &mut App) {
             Constraint::Min(0),     // Logs
             Constraint::Length(1),  // Status bar
         ])
-        .split(f.size());
+        .split(f.area());
 
     match app.state {
         AppState::SelectingWorker(_) => {
